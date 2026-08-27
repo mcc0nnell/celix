@@ -88,6 +88,48 @@ jobs:
         run: |
           conan remove -c celix/* 
 
+  vulnerability-scan:
+    needs: ubuntu-build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Download CycloneDX SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: celix-conan-sbom
+          path: sbom
+      - name: Scan SBOM for known vulnerabilities
+        env:
+          OSV_SCANNER_VERSION: 2.5.1
+          OSV_SCANNER_SHA256: f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be
+        run: |
+          curl -sSfL \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+            -o osv-scanner
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+          # OSV-Scanner v2 identifies CycloneDX JSON SBOMs by the *.cdx.json suffix.
+          cp sbom/sbom-cyclonedx-1.6.json celix.cdx.json
+
+          set +e
+          ./osv-scanner scan -L celix.cdx.json --format json --output-file osv-scanner-results.json
+          scan_status=$?
+          set -e
+
+          if [[ ${scan_status} -eq 1 ]]; then
+            echo "Known vulnerabilities found; continuing because this scan is report-only."
+          elif [[ ${scan_status} -ne 0 ]]; then
+            exit "${scan_status}"
+          fi
+      - name: Upload vulnerability scan report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: celix-osv-scanner-report
+          path: osv-scanner-results.json
+          if-no-files-found: error
+
   mac-build:
     runs-on: macOS-15
     timeout-minutes: 120
