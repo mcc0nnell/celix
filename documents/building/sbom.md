@@ -30,3 +30,18 @@ conan install . -o celix/*:build_all=True --deployer=cyclone_1.6 --deployer-fold
 
 The generated `sbom/sbom-cyclonedx-1.6.json` file is published by CI as the
 `celix-conan-sbom` artifact.
+
+## Vulnerability scanning
+
+CI downloads the generated `celix-conan-sbom` artifact in a separate job and
+scans it with OSV-Scanner for known vulnerabilities. The scan is report-only:
+known vulnerability findings do not fail the build. Scanner execution errors
+still fail the scan job.
+
+The machine-readable JSON result is published as the
+`celix-osv-scanner-report` CI artifact.
+
+The scan only covers components represented in the generated Conan SBOM that
+OSV-Scanner can identify and match against known vulnerability data. A clean
+report therefore does not prove that every Celix dependency is vulnerability-
+free or that a reported vulnerability is exploitable in Celix.
