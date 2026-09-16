@@ -24,6 +24,7 @@ add_executable(test_dfi
 		src/dyn_interface_tests.cpp
 		src/dyn_message_tests.cpp
 		src/json_serializer_tests.cpp
+			src/msgpack_serializer_tests.cpp
 		src/json_rpc_tests.cpp
 		src/dyn_common_tests.cc
 		src/json_rpc_test.c

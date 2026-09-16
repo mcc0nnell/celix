@@ -28,6 +28,7 @@ if (CELIX_DFI)
 			src/dyn_interface.c
 			src/dyn_message.c
 			src/json_serializer.c
+			src/msgpack_serializer.c
 			src/json_rpc.c
 			src/dyn_descriptor.c
 	)
