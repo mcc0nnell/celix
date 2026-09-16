@@ -388,6 +388,7 @@ class CelixConan(ConanFile):
             self.requires("civetweb/1.16")
         if self.options.build_celix_dfi:
             self.requires("libffi/[>=3.2.1 <4.0.0]")
+            self.requires("msgpack-c/6.1.0")
         if self.options.build_utils or self.options.build_celix_dfi or self.options.build_celix_etcdlib or self.options.build_event_admin_remote_provider_mqtt:
             self.requires("jansson/[>=2.12 <3.0.0]")
         if self.options.build_rsa_discovery_zeroconf:

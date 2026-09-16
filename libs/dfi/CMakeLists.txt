@@ -19,6 +19,10 @@ celix_subproject(CELIX_DFI "Option to enable building the dynamic function inter
 if (CELIX_DFI)
 	find_package(libffi REQUIRED)
 	find_package(jansson REQUIRED)
+	find_package(msgpack QUIET CONFIG)
+	if (NOT TARGET msgpack-c)
+		find_package(msgpack-c REQUIRED CONFIG)
+	endif ()
 
 	set(SOURCES
 			src/dyn_common.c
@@ -38,7 +42,7 @@ if (CELIX_DFI)
 			$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
 			$<INSTALL_INTERFACE:include/celix/dfi>
 			PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
-	target_link_libraries(dfi PRIVATE libffi::libffi)
+	target_link_libraries(dfi PRIVATE libffi::libffi msgpack-c)
 	target_link_libraries(dfi PUBLIC jansson::jansson Celix::utils)##The public header file(dyn_interface.h) Celix::utils(celix_version.h)
 	set_target_properties(dfi PROPERTIES
 			C_VISIBILITY_PRESET hidden
@@ -70,7 +74,7 @@ if (CELIX_DFI)
 				${CMAKE_CURRENT_LIST_DIR}/include
 				${CMAKE_BINARY_DIR}/celix/gen/includes/dfi
 				)
-		target_link_libraries(dfi_cut PUBLIC libffi::libffi jansson::jansson Celix::utils)
+		target_link_libraries(dfi_cut PUBLIC libffi::libffi jansson::jansson Celix::utils PRIVATE msgpack-c)
 		add_subdirectory(gtest)
 	endif(ENABLE_TESTING)
 endif (CELIX_DFI)
