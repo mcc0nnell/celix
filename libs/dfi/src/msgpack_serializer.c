@@ -33,24 +33,28 @@
 
 #define CELIX_MSGPACK_MAX_DEPTH 64u
 
+static bool celixMsgpack_depthExceeded(unsigned depth) {
+    if (depth <= CELIX_MSGPACK_MAX_DEPTH) return false;
+    celix_err_push("MessagePack nesting too deep");
+    return true;
+}
+
+static int celixMsgpack_fail(const char* message) {
+    celix_err_push(message);
+    return 1;
+}
+
 static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const void* input, unsigned depth);
 static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* type, void* loc, unsigned depth);
 
-static int celixMsgpack_packString(msgpack_packer* pk, const char* value, size_t len) {
-    return msgpack_pack_str(pk, len) != 0 || msgpack_pack_str_body(pk, value, len) != 0;
-}
-
 static int celixMsgpack_packJson(msgpack_packer* pk, const json_t* value, unsigned depth) {
-    if (depth > CELIX_MSGPACK_MAX_DEPTH) {
-        celix_err_push("MessagePack nesting too deep");
-        return 1;
-    }
+    if (celixMsgpack_depthExceeded(depth)) return 1;
     if (json_is_null(value)) return msgpack_pack_nil(pk) != 0;
     if (json_is_true(value)) return msgpack_pack_true(pk) != 0;
     if (json_is_false(value)) return msgpack_pack_false(pk) != 0;
     if (json_is_integer(value)) return msgpack_pack_int64(pk, json_integer_value(value)) != 0;
     if (json_is_real(value)) return msgpack_pack_double(pk, json_real_value(value)) != 0;
-    if (json_is_string(value)) return celixMsgpack_packString(pk, json_string_value(value), json_string_length(value));
+    if (json_is_string(value)) return msgpack_pack_str_with_body(pk, json_string_value(value), json_string_length(value)) != 0;
     if (json_is_array(value)) {
         size_t len = json_array_size(value);
         if (msgpack_pack_array(pk, len) != 0) return 1;
@@ -65,12 +69,11 @@ static int celixMsgpack_packJson(msgpack_packer* pk, const json_t* value, unsign
         const char* key = NULL;
         json_t* entry = NULL;
         json_object_foreach((json_t*)value, key, entry) {
-            if (celixMsgpack_packString(pk, key, strlen(key)) != 0 || celixMsgpack_packJson(pk, entry, depth + 1) != 0) return 1;
+            if (msgpack_pack_str_with_body(pk, key, strlen(key)) != 0 || celixMsgpack_packJson(pk, entry, depth + 1) != 0) return 1;
         }
         return 0;
     }
-    celix_err_push("Unsupported JSON value for MessagePack serialization");
-    return 1;
+    return celixMsgpack_fail("Unsupported JSON value for MessagePack serialization");
 }
 
 static int celixMsgpack_packEnum(msgpack_packer* pk, const dyn_type* type, int32_t value) {
@@ -79,17 +82,14 @@ static int celixMsgpack_packEnum(msgpack_packer* pk, const dyn_type* type, int32
     const struct meta_properties_head* entries = dynType_metaEntries(type);
     struct meta_entry* entry = NULL;
     TAILQ_FOREACH(entry, entries, entries) {
-        if (strcmp(valueStr, entry->value) == 0) return celixMsgpack_packString(pk, entry->name, strlen(entry->name));
+        if (strcmp(valueStr, entry->value) == 0) return msgpack_pack_str_with_body(pk, entry->name, strlen(entry->name)) != 0;
     }
     celix_err_pushf("Could not find Enum value %s in enum type", valueStr);
     return 1;
 }
 
 static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const void* input, unsigned depth) {
-    if (depth > CELIX_MSGPACK_MAX_DEPTH) {
-        celix_err_push("MessagePack nesting too deep");
-        return 1;
-    }
+    if (celixMsgpack_depthExceeded(depth)) return 1;
     type = dynType_realType(type);
     switch (dynType_descriptorType(type)) {
         case 'Z': return (*(const bool*)input ? msgpack_pack_true(pk) : msgpack_pack_false(pk)) != 0;
@@ -106,7 +106,7 @@ static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const 
         case 'D': return msgpack_pack_double(pk, *(const double*)input) != 0;
         case 't': {
             const char* value = *(const char* const*)input;
-            return value == NULL ? msgpack_pack_nil(pk) != 0 : celixMsgpack_packString(pk, value, strlen(value));
+            return value == NULL ? msgpack_pack_nil(pk) != 0 : msgpack_pack_str_with_body(pk, value, strlen(value)) != 0;
         }
         case 'E': return celixMsgpack_packEnum(pk, type, *(const int32_t*)input);
         case '{': {
@@ -116,13 +116,10 @@ static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const 
             struct complex_type_entry* entry = NULL;
             int index = 0;
             TAILQ_FOREACH(entry, entries, entries) {
-                if (entry->name == NULL) {
-                    celix_err_push("Unnamed field unsupported");
-                    return 1;
-                }
+                if (entry->name == NULL) return celixMsgpack_fail("Unnamed field unsupported");
                 const dyn_type* fieldType = dynType_complex_dynTypeAt(type, index);
                 const void* fieldLoc = dynType_complex_valLocAt(type, index, (void*)input);
-                if (celixMsgpack_packString(pk, entry->name, strlen(entry->name)) != 0 ||
+                if (msgpack_pack_str_with_body(pk, entry->name, strlen(entry->name)) != 0 ||
                     celixMsgpack_packDfi(pk, fieldType, fieldLoc, depth + 1) != 0) return 1;
                 ++index;
             }
@@ -141,10 +138,7 @@ static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const 
         }
         case '*': {
             const dyn_type* subType = dynType_typedPointer_getTypedType(type);
-            if (dynType_ffiType(subType) == &ffi_type_pointer) {
-                celix_err_push("Error cannot serialize pointer to pointer");
-                return 1;
-            }
+            if (dynType_ffiType(subType) == &ffi_type_pointer) return celixMsgpack_fail("Error cannot serialize pointer to pointer");
             const void* value = *(const void* const*)input;
             return value == NULL ? msgpack_pack_nil(pk) != 0 : celixMsgpack_packDfi(pk, subType, value, depth + 1);
         }
@@ -163,10 +157,7 @@ static int celixMsgpack_packDfi(msgpack_packer* pk, const dyn_type* type, const 
 }
 
 static json_t* celixMsgpack_objectToJson(const msgpack_object* object, unsigned depth) {
-    if (depth > CELIX_MSGPACK_MAX_DEPTH) {
-        celix_err_push("MessagePack nesting too deep");
-        return NULL;
-    }
+    if (celixMsgpack_depthExceeded(depth)) return NULL;
     switch (object->type) {
         case MSGPACK_OBJECT_NIL: return json_null();
         case MSGPACK_OBJECT_BOOLEAN: return json_boolean(object->via.boolean);
@@ -186,7 +177,6 @@ static json_t* celixMsgpack_objectToJson(const msgpack_object* object, unsigned 
             for (uint32_t i = 0; i < object->via.array.size; ++i) {
                 json_t* item = celixMsgpack_objectToJson(&object->via.array.ptr[i], depth + 1);
                 if (item == NULL || json_array_append_new(array, item) != 0) {
-                    json_decref(item);
                     json_decref(array);
                     return NULL;
                 }
@@ -204,10 +194,10 @@ static json_t* celixMsgpack_objectToJson(const msgpack_object* object, unsigned 
                     return NULL;
                 }
                 char* key = strndup(kv->key.via.str.ptr, kv->key.via.str.size);
+                if (key == NULL) { json_decref(map); return NULL; }
                 json_t* value = celixMsgpack_objectToJson(&kv->val, depth + 1);
-                if (key == NULL || value == NULL || json_object_set_new(map, key, value) != 0) {
+                if (value == NULL || json_object_set_new(map, key, value) != 0) {
                     free(key);
-                    json_decref(value);
                     json_decref(map);
                     return NULL;
                 }
@@ -230,31 +220,22 @@ static int celixMsgpack_readSigned(const msgpack_object* object, int64_t minimum
     } else if (object->type == MSGPACK_OBJECT_POSITIVE_INTEGER && object->via.u64 <= (uint64_t)INT64_MAX) {
         value = (int64_t)object->via.u64;
     } else {
-        celix_err_push("Expected MessagePack integer in signed range");
-        return 1;
+        return celixMsgpack_fail("Expected MessagePack integer in signed range");
     }
-    if (value < minimum || value > maximum) {
-        celix_err_push("MessagePack integer out of range");
-        return 1;
-    }
+    if (value < minimum || value > maximum) return celixMsgpack_fail("MessagePack integer out of range");
     *out = value;
     return 0;
 }
 
 static int celixMsgpack_readUnsigned(const msgpack_object* object, uint64_t maximum, uint64_t* out) {
-    if (object->type != MSGPACK_OBJECT_POSITIVE_INTEGER || object->via.u64 > maximum) {
-        celix_err_push("Expected MessagePack integer in unsigned range");
-        return 1;
-    }
+    if (object->type != MSGPACK_OBJECT_POSITIVE_INTEGER || object->via.u64 > maximum)
+        return celixMsgpack_fail("Expected MessagePack integer in unsigned range");
     *out = object->via.u64;
     return 0;
 }
 
 static int celixMsgpack_unpackEnum(const msgpack_object* object, const dyn_type* type, int32_t* out) {
-    if (object->type != MSGPACK_OBJECT_STR) {
-        celix_err_push("Expected MessagePack string for enum");
-        return 1;
-    }
+    if (object->type != MSGPACK_OBJECT_STR) return celixMsgpack_fail("Expected MessagePack string for enum");
     const struct meta_properties_head* entries = dynType_metaEntries(type);
     struct meta_entry* entry = NULL;
     TAILQ_FOREACH(entry, entries, entries) {
@@ -263,8 +244,7 @@ static int celixMsgpack_unpackEnum(const msgpack_object* object, const dyn_type*
             return 0;
         }
     }
-    celix_err_push("Could not find MessagePack enum name in enum type");
-    return 1;
+    return celixMsgpack_fail("Could not find MessagePack enum name in enum type");
 }
 
 static int celixMsgpack_unpackBuiltin(const msgpack_object* object, char descriptor, void* loc, unsigned depth) {
@@ -297,14 +277,11 @@ static int celixMsgpack_findField(const dyn_type* type, const msgpack_object* ke
 }
 
 static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* type, void* loc, unsigned depth) {
-    if (depth > CELIX_MSGPACK_MAX_DEPTH) {
-        celix_err_push("MessagePack nesting too deep");
-        return 1;
-    }
+    if (celixMsgpack_depthExceeded(depth)) return 1;
     type = dynType_realType(type);
     switch (dynType_descriptorType(type)) {
         case 'Z':
-            if (object->type != MSGPACK_OBJECT_BOOLEAN) { celix_err_push("Expected MessagePack boolean"); return 1; }
+            if (object->type != MSGPACK_OBJECT_BOOLEAN) return celixMsgpack_fail("Expected MessagePack boolean");
             *(bool*)loc = object->via.boolean;
             return 0;
         case 'B': { int64_t v; if (celixMsgpack_readSigned(object, CHAR_MIN, CHAR_MAX, &v)) return 1; *(char*)loc = (char)v; return 0; }
@@ -317,26 +294,26 @@ static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* 
         case 'i': { uint64_t v; if (celixMsgpack_readUnsigned(object, UINT32_MAX, &v)) return 1; *(uint32_t*)loc = (uint32_t)v; return 0; }
         case 'j': { uint64_t v; if (celixMsgpack_readUnsigned(object, UINT64_MAX, &v)) return 1; *(uint64_t*)loc = v; return 0; }
         case 'F':
-            if (object->type != MSGPACK_OBJECT_FLOAT32 && object->type != MSGPACK_OBJECT_FLOAT64) { celix_err_push("Expected MessagePack float"); return 1; }
+            if (object->type != MSGPACK_OBJECT_FLOAT32 && object->type != MSGPACK_OBJECT_FLOAT64) return celixMsgpack_fail("Expected MessagePack float");
             *(float*)loc = (float)object->via.f64;
             return 0;
         case 'D':
-            if (object->type != MSGPACK_OBJECT_FLOAT32 && object->type != MSGPACK_OBJECT_FLOAT64) { celix_err_push("Expected MessagePack double"); return 1; }
+            if (object->type != MSGPACK_OBJECT_FLOAT32 && object->type != MSGPACK_OBJECT_FLOAT64) return celixMsgpack_fail("Expected MessagePack double");
             *(double*)loc = object->via.f64;
             return 0;
         case 't': {
             if (object->type == MSGPACK_OBJECT_NIL) { *(char**)loc = NULL; return 0; }
-            if (object->type != MSGPACK_OBJECT_STR) { celix_err_push("Expected MessagePack string"); return 1; }
-            if (memchr(object->via.str.ptr, '\0', object->via.str.size) != NULL) { celix_err_push("Embedded NUL in MessagePack text"); return 1; }
+            if (object->type != MSGPACK_OBJECT_STR) return celixMsgpack_fail("Expected MessagePack string");
+            if (memchr(object->via.str.ptr, '\0', object->via.str.size) != NULL) return celixMsgpack_fail("Embedded NUL in MessagePack text");
             char* value = strndup(object->via.str.ptr, object->via.str.size);
-            if (value == NULL) { celix_err_push("Cannot allocate MessagePack text"); return 1; }
+            if (value == NULL) return celixMsgpack_fail("Cannot allocate MessagePack text");
             int status = dynType_text_allocAndInit(type, loc, value);
             free(value);
             return status;
         }
         case 'E': return celixMsgpack_unpackEnum(object, type, (int32_t*)loc);
         case '[': {
-            if (object->type != MSGPACK_OBJECT_ARRAY) { celix_err_push("Expected MessagePack array"); return 1; }
+            if (object->type != MSGPACK_OBJECT_ARRAY) return celixMsgpack_fail("Expected MessagePack array");
             if (dynType_sequence_alloc(type, loc, object->via.array.size) != 0) return 1;
             const dyn_type* itemType = dynType_sequence_itemType(type);
             for (uint32_t i = 0; i < object->via.array.size; ++i) {
@@ -347,21 +324,19 @@ static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* 
             return 0;
         }
         case '{': {
-            if (object->type != MSGPACK_OBJECT_MAP) { celix_err_push("Expected MessagePack map"); return 1; }
+            if (object->type != MSGPACK_OBJECT_MAP) return celixMsgpack_fail("Expected MessagePack map");
             size_t fieldCount = dynType_complex_nrOfEntries(type);
             bool* seen = fieldCount == 0 ? NULL : calloc(fieldCount, sizeof(*seen));
-            if (fieldCount != 0 && seen == NULL) { celix_err_push("Cannot allocate MessagePack field tracker"); return 1; }
+            if (fieldCount != 0 && seen == NULL) return celixMsgpack_fail("Cannot allocate MessagePack field tracker");
             int status = 0;
             for (uint32_t i = 0; status == 0 && i < object->via.map.size; ++i) {
                 const msgpack_object_kv* kv = &object->via.map.ptr[i];
                 int fieldIndex = celixMsgpack_findField(type, &kv->key);
                 if (fieldIndex == -2) {
-                    celix_err_push("MessagePack struct field name must be a string");
-                    status = 1;
+                    status = celixMsgpack_fail("MessagePack struct field name must be a string");
                 } else if (fieldIndex >= 0) {
                     if (seen[fieldIndex]) {
-                        celix_err_push("Duplicate MessagePack struct field");
-                        status = 1;
+                        status = celixMsgpack_fail("Duplicate MessagePack struct field");
                     } else {
                         seen[fieldIndex] = true;
                         const dyn_type* fieldType = dynType_complex_dynTypeAt(type, fieldIndex);
@@ -371,7 +346,7 @@ static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* 
                 }
             }
             for (size_t i = 0; status == 0 && i < fieldCount; ++i) {
-                if (!seen[i]) { celix_err_push("Missing MessagePack struct field"); status = 1; }
+                if (!seen[i]) status = celixMsgpack_fail("Missing MessagePack struct field");
             }
             free(seen);
             return status;
@@ -379,7 +354,7 @@ static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* 
         case '*': {
             if (object->type == MSGPACK_OBJECT_NIL) { *(void**)loc = NULL; return 0; }
             const dyn_type* subType = dynType_typedPointer_getTypedType(type);
-            if (dynType_ffiType(subType) == &ffi_type_pointer) { celix_err_push("Error cannot deserialize pointer to pointer"); return 1; }
+            if (dynType_ffiType(subType) == &ffi_type_pointer) return celixMsgpack_fail("Error cannot deserialize pointer to pointer");
             void* value = NULL;
             if (dynType_alloc(subType, &value) != 0) return 1;
             if (celixMsgpack_unpackDfi(object, subType, value, depth + 1) != 0) { dynType_free(subType, value); return 1; }
@@ -395,10 +370,8 @@ static int celixMsgpack_unpackDfi(const msgpack_object* object, const dyn_type* 
 }
 
 int msgpackSerializer_serialize(const dyn_type* type, const void* input, uint8_t** output, size_t* outputLength) {
-    if (type == NULL || input == NULL || output == NULL || outputLength == NULL) {
-        celix_err_push("Invalid argument to MessagePack serializer");
-        return 1;
-    }
+    if (type == NULL || input == NULL || output == NULL || outputLength == NULL)
+        return celixMsgpack_fail("Invalid argument to MessagePack serializer");
     *output = NULL;
     *outputLength = 0;
     msgpack_sbuffer buffer;
@@ -415,10 +388,8 @@ int msgpackSerializer_serialize(const dyn_type* type, const void* input, uint8_t
 }
 
 int msgpackSerializer_deserialize(const dyn_type* type, const uint8_t* input, size_t inputLength, void** result) {
-    if (type == NULL || input == NULL || result == NULL) {
-        celix_err_push("Invalid argument to MessagePack deserializer");
-        return 1;
-    }
+    if (type == NULL || input == NULL || result == NULL)
+        return celixMsgpack_fail("Invalid argument to MessagePack deserializer");
     *result = NULL;
     msgpack_unpacked unpacked;
     msgpack_unpacked_init(&unpacked);
