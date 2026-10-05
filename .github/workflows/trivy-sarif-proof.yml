@@ -1,0 +1,48 @@
+name: Trivy SARIF proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-sarif:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download SBOM artifact from PR #845
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            '/repos/apache/celix/actions/runs?head_sha=ca060752beef436e74ac9008de0126eff7c04241&event=pull_request&status=success&per_page=100' \
+            --jq '.workflow_runs[] | select(.name == "Conan Create") | .id' | head -n1)"
+          test -n "$run_id"
+          gh run download "$run_id" \
+            --repo apache/celix \
+            --name celix-conan-safe-defaults \
+            --dir evidence
+          test -s evidence/sbom/sbom-cyclonedx-1.6.json
+
+      - name: Scan existing CycloneDX SBOM to SARIF
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: sbom
+          input: evidence/sbom/sbom-cyclonedx-1.6.json
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+
+      - name: Verify SARIF shape
+        run: |
+          set -euo pipefail
+          jq -e '.version == "2.1.0" and (.runs | type == "array")' trivy-results.sarif >/dev/null
+
+      - name: Upload SARIF as ordinary CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-proof
+          path: trivy-results.sarif
+          if-no-files-found: error
